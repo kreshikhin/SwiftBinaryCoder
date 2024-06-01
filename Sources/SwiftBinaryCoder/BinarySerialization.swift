@@ -213,3 +213,206 @@ struct BinaryWriter {
         return .u32(UInt32(count))
     }
 }
+
+struct BinaryReader {
+    let data: Data
+    var index = 0
+    var endianness: BinaryEndianness
+    var codingPath: [CodingKey] = []
+
+    var isAtEnd: Bool { index >= data.count }
+    var remaining: Int { data.count - index }
+
+    mutating func readValue() throws -> BinaryValue {
+        let rawTag = try readUInt8()
+        guard let tag = BinaryTypeTag(rawValue: rawTag) else {
+            throw corrupted("Unknown type tag 0x\(String(rawTag, radix: 16)).")
+        }
+
+        switch tag {
+        case .null:
+            return .null
+        case .boolFalse:
+            return .bool(false)
+        case .boolTrue:
+            return .bool(true)
+        case .int8:
+            return .int(Int64(Int8(bitPattern: try readUInt8())))
+        case .int16:
+            return .int(Int64(Int16(bitPattern: try readUInt16())))
+        case .int32:
+            return .int(Int64(Int32(bitPattern: try readUInt32())))
+        case .int64:
+            return .int(Int64(bitPattern: try readUInt64()))
+        case .uint8:
+            return .uint(UInt64(try readUInt8()))
+        case .uint16:
+            return .uint(UInt64(try readUInt16()))
+        case .uint32:
+            return .uint(UInt64(try readUInt32()))
+        case .uint64:
+            return .uint(try readUInt64())
+        case .float32:
+            return .float(Float(bitPattern: try readUInt32()))
+        case .float64:
+            return .double(Double(bitPattern: try readUInt64()))
+        case .str8:
+            return .string(try readString(.u8))
+        case .str16:
+            return .string(try readString(.u16))
+        case .str32:
+            return .string(try readString(.u32))
+        case .bin8:
+            return .data(try readBlob(.u8))
+        case .bin16:
+            return .data(try readBlob(.u16))
+        case .bin32:
+            return .data(try readBlob(.u32))
+        case .array8:
+            return try readArray(.u8)
+        case .array16:
+            return try readArray(.u16)
+        case .array32:
+            return try readArray(.u32)
+        case .map8:
+            return try readMap(.u8)
+        case .map16:
+            return try readMap(.u16)
+        case .map32:
+            return try readMap(.u32)
+        case .timestamp:
+            return .timestamp(Double(bitPattern: try readUInt64()))
+        case .ext8:
+            return try readExtension(.u8)
+        case .ext16:
+            return try readExtension(.u16)
+        case .ext32:
+            return try readExtension(.u32)
+        }
+    }
+
+    private mutating func readArray(_ size: CountSize) throws -> BinaryValue {
+        let count = try readCount(size)
+        let array = BinaryArray()
+        array.elements.reserveCapacity(count)
+        for elementIndex in 0..<count {
+            codingPath.append(BinaryCodingKey(index: elementIndex))
+            array.elements.append(try readValue())
+            codingPath.removeLast()
+        }
+        return .array(array)
+    }
+
+    private mutating func readMap(_ size: CountSize) throws -> BinaryValue {
+        let count = try readCount(size)
+        let map = BinaryMap()
+        for _ in 0..<count {
+            let key = try readValue()
+            let pathKey = BinaryCodingKey(stringValue: mapKeyDescription(key))
+            codingPath.append(pathKey)
+            let value = try readValue()
+            codingPath.removeLast()
+            map.set(key: key, value: value)
+        }
+        return .map(map)
+    }
+
+    private mutating func readExtension(_ size: CountSize) throws -> BinaryValue {
+        let type = Int8(bitPattern: try readUInt8())
+        let payload = try readBlob(size)
+        return .ext(type: type, data: payload)
+    }
+
+    private func mapKeyDescription(_ key: BinaryValue) -> String {
+        switch key.unwrap {
+        case .string(let value): return value
+        case .int(let value): return String(value)
+        case .uint(let value): return String(value)
+        default: return key.typeDescription
+        }
+    }
+
+    private mutating func readString(_ size: CountSize) throws -> String {
+        let bytes = try readBlob(size)
+        guard let string = String(data: bytes, encoding: .utf8) else {
+            throw corrupted("String is not valid UTF-8.")
+        }
+        return string
+    }
+
+    private mutating func readBlob(_ size: CountSize) throws -> Data {
+        let count = try readCount(size)
+        guard count <= remaining else {
+            throw corrupted("Unexpected end of binary data.")
+        }
+        let start = index
+        index += count
+        return data.subdata(in: start..<index)
+    }
+
+    private enum CountSize {
+        case u8, u16, u32
+    }
+
+    private mutating func readCount(_ size: CountSize) throws -> Int {
+        let raw: UInt64
+        switch size {
+        case .u8:
+            raw = UInt64(try readUInt8())
+        case .u16:
+            raw = UInt64(try readUInt16())
+        case .u32:
+            raw = UInt64(try readUInt32())
+        }
+        guard raw <= UInt64(remaining) else {
+            throw corrupted("Length \(raw) exceeds the \(remaining) remaining bytes.")
+        }
+        return Int(raw)
+    }
+
+    mutating func readUInt8() throws -> UInt8 {
+        guard index < data.count else {
+            throw corrupted("Unexpected end of binary data.")
+        }
+        let byte = data[index]
+        index += 1
+        return byte
+    }
+
+    mutating func readUInt16() throws -> UInt16 {
+        let raw = try readRaw(UInt16.self)
+        return endianness == .big ? UInt16(bigEndian: raw) : UInt16(littleEndian: raw)
+    }
+
+    mutating func readUInt32() throws -> UInt32 {
+        let raw = try readRaw(UInt32.self)
+        return endianness == .big ? UInt32(bigEndian: raw) : UInt32(littleEndian: raw)
+    }
+
+    mutating func readUInt64() throws -> UInt64 {
+        let raw = try readRaw(UInt64.self)
+        return endianness == .big ? UInt64(bigEndian: raw) : UInt64(littleEndian: raw)
+    }
+
+    private mutating func readRaw<T: FixedWidthInteger>(_ type: T.Type) throws -> T {
+        let size = MemoryLayout<T>.size
+        guard remaining >= size else {
+            throw corrupted("Unexpected end of binary data.")
+        }
+        var value = T()
+        _ = withUnsafeMutableBytes(of: &value) { destination in
+            data.copyBytes(to: destination, from: index..<(index + size))
+        }
+        index += size
+        return value
+    }
+
+    private func corrupted(_ message: String) -> DecodingError {
+        DecodingError.dataCorrupted(
+            DecodingError.Context(
+                codingPath: codingPath,
+                debugDescription: "\(message) At \(binaryCodingPathDescription(codingPath))."
+            )
+        )
+    }
+}
