@@ -61,3 +61,48 @@ private struct BinaryCursor {
         return littleEndian ? T(littleEndian: raw) : T(bigEndian: raw)
     }
 }
+
+private extension Data {
+    mutating func appendU16(_ value: UInt16, littleEndian: Bool) {
+        appendInteger(value, littleEndian: littleEndian)
+    }
+
+    mutating func appendU32(_ value: UInt32, littleEndian: Bool) {
+        appendInteger(value, littleEndian: littleEndian)
+    }
+
+    mutating func appendI32(_ value: Int32, littleEndian: Bool) {
+        appendInteger(value, littleEndian: littleEndian)
+    }
+
+    mutating func appendASCII(_ string: String) {
+        append(contentsOf: string.utf8)
+    }
+
+    private mutating func appendInteger<T: FixedWidthInteger>(_ value: T, littleEndian: Bool) {
+        let stored: T = littleEndian ? value.littleEndian : value.bigEndian
+        Swift.withUnsafeBytes(of: stored) { append(contentsOf: $0) }
+    }
+}
+
+private extension Array where Element == Int16 {
+    func littleEndianPCM() -> Data {
+        var data = Data(capacity: count * 2)
+        for sample in self {
+            data.appendU16(UInt16(bitPattern: sample), littleEndian: true)
+        }
+        return data
+    }
+}
+
+private extension Data {
+    func int16Samples() throws -> [Int16] {
+        var cursor = BinaryCursor(data: self, littleEndian: true)
+        var samples: [Int16] = []
+        samples.reserveCapacity(count / 2)
+        while !cursor.isAtEnd {
+            samples.append(Int16(bitPattern: try cursor.u16()))
+        }
+        return samples
+    }
+}
