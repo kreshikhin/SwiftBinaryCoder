@@ -106,3 +106,23 @@ private extension Data {
         return samples
     }
 }
+
+private func required<T>(_ value: T?, _ message: String) throws -> T {
+    guard let value else { throw FormatReadError(message) }
+    return value
+}
+
+private func assertCoderRoundTrip<T: Codable & Equatable>(
+    _ value: T,
+    endianness: BinaryEndianness,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) throws {
+    let encoder = BinaryEncoder()
+    encoder.endianness = endianness
+    let decoder = BinaryDecoder()
+    decoder.endianness = endianness
+    let encoded = try encoder.encode(value)
+    let decoded = try decoder.decode(T.self, from: encoded)
+    XCTAssertEqual(decoded, value, file: file, line: line)
+}
