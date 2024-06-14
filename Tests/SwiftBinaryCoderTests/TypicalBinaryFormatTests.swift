@@ -2,6 +2,87 @@ import Foundation
 import XCTest
 @testable import SwiftBinaryCoder
 
+// MARK: - WAVE
+
+/// PCM WAVE: a RIFF container, a 16-byte `fmt ` chunk, and little-endian samples.
+private struct WaveFile: Codable, Equatable {
+    var format: Format
+    var samples: [Int16]
+
+    struct Format: Codable, Equatable {
+        var audioFormat: UInt16
+        var channels: UInt16
+        var sampleRate: UInt32
+        var byteRate: UInt32
+        var blockAlign: UInt16
+        var bitsPerSample: UInt16
+    }
+
+    func waveData() -> Data {
+        let pcm = samples.littleEndianPCM()
+        var data = Data()
+        data.appendASCII("RIFF")
+        data.appendU32(UInt32(36 + pcm.count), littleEndian: true)
+        data.appendASCII("WAVE")
+        data.appendASCII("fmt ")
+        data.appendU32(16, littleEndian: true)
+        data.appendU16(format.audioFormat, littleEndian: true)
+        data.appendU16(format.channels, littleEndian: true)
+        data.appendU32(format.sampleRate, littleEndian: true)
+        data.appendU32(format.byteRate, littleEndian: true)
+        data.appendU16(format.blockAlign, littleEndian: true)
+        data.appendU16(format.bitsPerSample, littleEndian: true)
+        data.appendASCII("data")
+        data.appendU32(UInt32(pcm.count), littleEndian: true)
+        data.append(pcm)
+        return data
+    }
+
+    init(format: Format, samples: [Int16]) {
+        self.format = format
+        self.samples = samples
+    }
+
+    init(waveData data: Data) throws {
+        var cursor = BinaryCursor(data: data, littleEndian: true)
+        guard try cursor.ascii(4) == "RIFF" else { throw FormatReadError("WAVE file does not start with RIFF.") }
+        _ = try cursor.u32()
+        guard try cursor.ascii(4) == "WAVE" else { throw FormatReadError("RIFF format is not WAVE.") }
+
+        var format: Format?
+        var samples: [Int16]?
+        while !cursor.isAtEnd {
+            let chunkID = try cursor.ascii(4)
+            let chunkSize = Int(try cursor.u32())
+            let payload = try cursor.bytes(chunkSize)
+            if chunkSize % 2 == 1, !cursor.isAtEnd {
+                _ = try cursor.u8()
+            }
+            switch chunkID {
+            case "fmt ":
+                guard payload.count >= 16 else { throw FormatReadError("fmt chunk is shorter than 16 bytes.") }
+                var fmt = BinaryCursor(data: payload, littleEndian: true)
+                format = Format(
+                    audioFormat: try fmt.u16(),
+                    channels: try fmt.u16(),
+                    sampleRate: try fmt.u32(),
+                    byteRate: try fmt.u32(),
+                    blockAlign: try fmt.u16(),
+                    bitsPerSample: try fmt.u16()
+                )
+            case "data":
+                guard payload.count % 2 == 0 else { throw FormatReadError("PCM payload is not a whole number of samples.") }
+                samples = try payload.int16Samples()
+            default:
+                break
+            }
+        }
+        guard let format, let samples else { throw FormatReadError("WAVE file is missing fmt or data.") }
+        self.format = format
+        self.samples = samples
+    }
+}
+
 // MARK: - Bytes
 
 private struct FormatReadError: Error, CustomStringConvertible {
