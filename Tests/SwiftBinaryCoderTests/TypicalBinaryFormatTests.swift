@@ -2,6 +2,47 @@ import Foundation
 import XCTest
 @testable import SwiftBinaryCoder
 
+/// Examples of the usual container layout for four file formats.
+///
+/// Each example builds a small document, writes the bytes the format itself
+/// uses, reads those bytes back, and also stores the same value with
+/// ``BinaryEncoder``. The library document is a separate encoding: a `.wav`
+/// file is not a `BinaryEncoder` payload.
+final class TypicalBinaryFormatTests: XCTestCase {
+    func testWriteAndReadWave() throws {
+        let wave = WaveFile(
+            format: WaveFile.Format(
+                audioFormat: 1,
+                channels: 2,
+                sampleRate: 44_100,
+                byteRate: 176_400,
+                blockAlign: 4,
+                bitsPerSample: 16
+            ),
+            samples: [0, 8_000, -8_000, 16_000, -16_000, 32_000]
+        )
+
+        let file = wave.waveData()
+        let read = try WaveFile(waveData: file)
+
+        XCTAssertEqual(read, wave)
+        XCTAssertEqual(read.format.audioFormat, 1)
+        XCTAssertEqual(read.format.channels, 2)
+        XCTAssertEqual(read.format.sampleRate, 44_100)
+        XCTAssertEqual(
+            read.format.byteRate,
+            read.format.sampleRate * UInt32(read.format.blockAlign)
+        )
+        XCTAssertEqual(read.format.blockAlign, read.format.channels * read.format.bitsPerSample / 8)
+        XCTAssertEqual(read.samples.count, 6)
+        XCTAssertEqual(file.prefix(4), Data("RIFF".utf8))
+        XCTAssertEqual(file.dropFirst(8).prefix(4), Data("WAVE".utf8))
+        XCTAssertThrowsError(try WaveFile(waveData: Data(file.prefix(20))))
+
+        try assertCoderRoundTrip(wave, endianness: .little)
+    }
+}
+
 // MARK: - WAVE
 
 /// PCM WAVE: a RIFF container, a 16-byte `fmt ` chunk, and little-endian samples.
