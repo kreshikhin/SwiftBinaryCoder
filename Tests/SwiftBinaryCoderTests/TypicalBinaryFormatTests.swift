@@ -41,6 +41,32 @@ final class TypicalBinaryFormatTests: XCTestCase {
 
         try assertCoderRoundTrip(wave, endianness: .little)
     }
+
+    func testWriteAndReadBMP() throws {
+        // Row-major, top to bottom. BMP stores rows bottom to top, in BGR order.
+        let image = BMPImage(
+            width: 2,
+            height: 2,
+            pixelsPerMeter: 2_835,
+            pixels: [
+                BMPImage.Pixel(blue: 255, green: 0, red: 0),
+                BMPImage.Pixel(blue: 0, green: 0, red: 255),
+                BMPImage.Pixel(blue: 0, green: 255, red: 0),
+                BMPImage.Pixel(blue: 255, green: 255, red: 255),
+            ]
+        )
+
+        let file = image.bmpData()
+        let read = try BMPImage(bmpData: file)
+
+        XCTAssertEqual(read, image)
+        XCTAssertEqual(file.prefix(2), Data("BM".utf8))
+        XCTAssertEqual(file.count, 14 + 40 + 16)
+        XCTAssertEqual(read.pixels.count, Int(read.width) * Int(read.height))
+        XCTAssertThrowsError(try BMPImage(bmpData: Data(file.prefix(30))))
+
+        try assertCoderRoundTrip(image, endianness: .little)
+    }
 }
 
 // MARK: - WAVE
@@ -121,6 +147,104 @@ private struct WaveFile: Codable, Equatable {
         guard let format, let samples else { throw FormatReadError("WAVE file is missing fmt or data.") }
         self.format = format
         self.samples = samples
+    }
+}
+
+// MARK: - BMP
+
+/// 24-bit uncompressed BMP. Rows are bottom-up and padded to a multiple of four bytes.
+private struct BMPImage: Codable, Equatable {
+    var width: Int32
+    var height: Int32
+    var pixelsPerMeter: Int32
+    var pixels: [Pixel]
+
+    struct Pixel: Codable, Equatable {
+        var blue: UInt8
+        var green: UInt8
+        var red: UInt8
+    }
+
+    func bmpData() -> Data {
+        let rowStride = ((Int(width) * 3 + 3) / 4) * 4
+        var raster = Data(count: rowStride * Int(height))
+        for y in 0..<Int(height) {
+            let sourceRow = Int(height) - 1 - y
+            for x in 0..<Int(width) {
+                let pixel = pixels[sourceRow * Int(width) + x]
+                let offset = y * rowStride + x * 3
+                raster[offset] = pixel.blue
+                raster[offset + 1] = pixel.green
+                raster[offset + 2] = pixel.red
+            }
+        }
+
+        var data = Data()
+        data.appendASCII("BM")
+        data.appendU32(UInt32(14 + 40 + raster.count), littleEndian: true)
+        data.appendU16(0, littleEndian: true)
+        data.appendU16(0, littleEndian: true)
+        data.appendU32(54, littleEndian: true)
+        data.appendU32(40, littleEndian: true)
+        data.appendI32(width, littleEndian: true)
+        data.appendI32(height, littleEndian: true)
+        data.appendU16(1, littleEndian: true)
+        data.appendU16(24, littleEndian: true)
+        data.appendU32(0, littleEndian: true)
+        data.appendU32(UInt32(raster.count), littleEndian: true)
+        data.appendI32(pixelsPerMeter, littleEndian: true)
+        data.appendI32(pixelsPerMeter, littleEndian: true)
+        data.appendU32(0, littleEndian: true)
+        data.appendU32(0, littleEndian: true)
+        data.append(raster)
+        return data
+    }
+
+    init(width: Int32, height: Int32, pixelsPerMeter: Int32, pixels: [Pixel]) {
+        self.width = width
+        self.height = height
+        self.pixelsPerMeter = pixelsPerMeter
+        self.pixels = pixels
+    }
+
+    init(bmpData data: Data) throws {
+        var cursor = BinaryCursor(data: data, littleEndian: true)
+        guard try cursor.ascii(2) == "BM" else { throw FormatReadError("BMP file does not start with BM.") }
+        _ = try cursor.u32()
+        _ = try cursor.u16()
+        _ = try cursor.u16()
+        let pixelOffset = Int(try cursor.u32())
+        let headerSize = try cursor.u32()
+        guard headerSize >= 40 else { throw FormatReadError("BMP info header is too small.") }
+        let width = try cursor.i32()
+        let height = try cursor.i32()
+        _ = try cursor.u16()
+        let bitCount = try cursor.u16()
+        let compression = try cursor.u32()
+        _ = try cursor.u32()
+        let pixelsPerMeter = try cursor.i32()
+        _ = try cursor.i32()
+        guard bitCount == 24, compression == 0, width > 0, height > 0 else {
+            throw FormatReadError("Only uncompressed 24-bit BMP images are read here.")
+        }
+        guard pixelOffset <= data.count else { throw FormatReadError("BMP pixel offset is past the end of the file.") }
+
+        let rowStride = ((Int(width) * 3 + 3) / 4) * 4
+        var pixels: [Pixel] = []
+        pixels.reserveCapacity(Int(width * height))
+        for y in 0..<Int(height) {
+            let sourceRow = Int(height) - 1 - y
+            let rowStart = pixelOffset + sourceRow * rowStride
+            guard rowStart + Int(width) * 3 <= data.count else { throw FormatReadError("BMP raster is truncated.") }
+            for x in 0..<Int(width) {
+                let offset = rowStart + x * 3
+                pixels.append(Pixel(blue: data[offset], green: data[offset + 1], red: data[offset + 2]))
+            }
+        }
+        self.width = width
+        self.height = height
+        self.pixelsPerMeter = pixelsPerMeter
+        self.pixels = pixels
     }
 }
 
