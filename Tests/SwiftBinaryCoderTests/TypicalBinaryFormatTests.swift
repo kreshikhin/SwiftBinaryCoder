@@ -248,6 +248,118 @@ private struct BMPImage: Codable, Equatable {
     }
 }
 
+// MARK: - TIFF
+
+/// Baseline TIFF: an 8-byte header, one IFD, and a single 8-bit strip.
+private struct TIFFImage: Codable, Equatable {
+    var littleEndian: Bool
+    var width: UInt32
+    var height: UInt32
+    var bitsPerSample: UInt16
+    var compression: UInt16
+    var photometric: UInt16
+    var samplesPerPixel: UInt16
+    var pixels: Data
+
+    func tiffData() -> Data {
+        let stripOffset: UInt32 = 122
+        var data = Data()
+        data.append(contentsOf: littleEndian ? [0x49, 0x49] : [0x4D, 0x4D])
+        data.appendU16(42, littleEndian: littleEndian)
+        data.appendU32(8, littleEndian: littleEndian)
+        data.appendU16(9, littleEndian: littleEndian)
+        appendField(256, type: 4, value: width, to: &data)
+        appendField(257, type: 4, value: height, to: &data)
+        appendField(258, type: 3, value: UInt32(bitsPerSample), to: &data)
+        appendField(259, type: 3, value: UInt32(compression), to: &data)
+        appendField(262, type: 3, value: UInt32(photometric), to: &data)
+        appendField(273, type: 4, value: stripOffset, to: &data)
+        appendField(277, type: 3, value: UInt32(samplesPerPixel), to: &data)
+        appendField(278, type: 4, value: height, to: &data)
+        appendField(279, type: 4, value: UInt32(pixels.count), to: &data)
+        data.appendU32(0, littleEndian: littleEndian)
+        data.append(pixels)
+        return data
+    }
+
+    init(
+        littleEndian: Bool,
+        width: UInt32,
+        height: UInt32,
+        bitsPerSample: UInt16,
+        compression: UInt16,
+        photometric: UInt16,
+        samplesPerPixel: UInt16,
+        pixels: Data
+    ) {
+        self.littleEndian = littleEndian
+        self.width = width
+        self.height = height
+        self.bitsPerSample = bitsPerSample
+        self.compression = compression
+        self.photometric = photometric
+        self.samplesPerPixel = samplesPerPixel
+        self.pixels = pixels
+    }
+
+    init(tiffData data: Data) throws {
+        guard data.count >= 8 else { throw FormatReadError("TIFF header is truncated.") }
+        let littleEndian: Bool
+        switch (data[0], data[1]) {
+        case (0x49, 0x49): littleEndian = true
+        case (0x4D, 0x4D): littleEndian = false
+        default: throw FormatReadError("TIFF byte order is neither II nor MM.")
+        }
+        var cursor = BinaryCursor(data: data, littleEndian: littleEndian)
+        _ = try cursor.bytes(2)
+        guard try cursor.u16() == 42 else { throw FormatReadError("TIFF magic is not 42.") }
+        let ifdOffset = Int(try cursor.u32())
+        guard ifdOffset + 2 <= data.count else { throw FormatReadError("TIFF IFD offset is past the end of the file.") }
+        cursor.index = ifdOffset
+        let count = Int(try cursor.u16())
+        var fields: [UInt16: UInt32] = [:]
+        for _ in 0..<count {
+            let tag = try cursor.u16()
+            let type = try cursor.u16()
+            _ = try cursor.u32()
+            let raw = try cursor.u32()
+            let value = type == 3 ? (littleEndian ? raw & 0xFFFF : raw >> 16) : raw
+            fields[tag] = value
+        }
+        guard
+            let width = fields[256],
+            let height = fields[257],
+            let bits = fields[258],
+            let compression = fields[259],
+            let photometric = fields[262],
+            let samples = fields[277],
+            let stripOffset = fields[273],
+            let stripCount = fields[279]
+        else {
+            throw FormatReadError("TIFF IFD is missing an image field.")
+        }
+        let start = Int(stripOffset)
+        let end = start + Int(stripCount)
+        guard end <= data.count else { throw FormatReadError("TIFF strip is past the end of the file.") }
+        self.littleEndian = littleEndian
+        self.width = width
+        self.height = height
+        self.bitsPerSample = UInt16(bits)
+        self.compression = UInt16(compression)
+        self.photometric = UInt16(photometric)
+        self.samplesPerPixel = UInt16(samples)
+        self.pixels = data.subdata(in: start..<end)
+    }
+
+    private func appendField(_ tag: UInt16, type: UInt16, value: UInt32, to data: inout Data) {
+        let stored = type == 3 && !littleEndian ? value << 16 : value
+        data.appendU16(tag, littleEndian: littleEndian)
+        data.appendU16(type, littleEndian: littleEndian)
+        data.appendU32(1, littleEndian: littleEndian)
+        data.appendU32(stored, littleEndian: littleEndian)
+    }
+}
+
 // MARK: - Bytes
 
 private struct FormatReadError: Error, CustomStringConvertible {
