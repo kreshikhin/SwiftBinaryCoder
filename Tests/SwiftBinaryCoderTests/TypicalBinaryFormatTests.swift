@@ -67,6 +67,44 @@ final class TypicalBinaryFormatTests: XCTestCase {
 
         try assertCoderRoundTrip(image, endianness: .little)
     }
+
+    func testWriteAndReadTIFF() throws {
+        let image = TIFFImage(
+            littleEndian: true,
+            width: 2,
+            height: 2,
+            bitsPerSample: 8,
+            compression: 1,
+            photometric: 1,
+            samplesPerPixel: 1,
+            pixels: Data([0, 64, 128, 255])
+        )
+
+        let file = image.tiffData()
+        let read = try TIFFImage(tiffData: file)
+
+        XCTAssertEqual(read, image)
+        XCTAssertEqual(file.prefix(2), Data([0x49, 0x49]))
+        XCTAssertEqual(file.count, 122 + image.pixels.count)
+        XCTAssertThrowsError(try TIFFImage(tiffData: Data(file.prefix(8))))
+
+        let motorola = TIFFImage(
+            littleEndian: false,
+            width: 2,
+            height: 2,
+            bitsPerSample: 8,
+            compression: 1,
+            photometric: 1,
+            samplesPerPixel: 1,
+            pixels: Data([1, 2, 3, 4])
+        )
+        let bigFile = motorola.tiffData()
+        XCTAssertEqual(bigFile.prefix(2), Data([0x4D, 0x4D]))
+        XCTAssertEqual(try TIFFImage(tiffData: bigFile), motorola)
+
+        try assertCoderRoundTrip(image, endianness: .little)
+        try assertCoderRoundTrip(motorola, endianness: .big)
+    }
 }
 
 // MARK: - WAVE
