@@ -398,6 +398,242 @@ private struct TIFFImage: Codable, Equatable {
     }
 }
 
+// MARK: - JPEG
+
+/// Baseline JPEG markers: SOI, APP0 JFIF, COM, DQT, SOF0, SOS, and EOI.
+private struct JPEGImage: Codable, Equatable {
+    var jfif: JFIF
+    var comment: String
+    var quantization: [UInt8]
+    var precision: UInt8
+    var width: UInt16
+    var height: UInt16
+    var components: [Component]
+    var scan: [ScanComponent]
+    var spectralStart: UInt8
+    var spectralEnd: UInt8
+    var successiveApproximation: UInt8
+    var entropy: Data
+
+    struct JFIF: Codable, Equatable {
+        var major: UInt8
+        var minor: UInt8
+        var units: UInt8
+        var xDensity: UInt16
+        var yDensity: UInt16
+    }
+
+    struct Component: Codable, Equatable {
+        var id: UInt8
+        var horizontalSampling: UInt8
+        var verticalSampling: UInt8
+        var quantizationTable: UInt8
+    }
+
+    struct ScanComponent: Codable, Equatable {
+        var id: UInt8
+        var dcTable: UInt8
+        var acTable: UInt8
+    }
+
+    func jpegData() -> Data {
+        var data = Data([0xFF, 0xD8])
+        appendSegment(0xE0, to: &data) {
+            $0.appendASCII("JFIF\u{0}")
+            $0.append(jfif.major)
+            $0.append(jfif.minor)
+            $0.append(jfif.units)
+            $0.appendU16(jfif.xDensity, littleEndian: false)
+            $0.appendU16(jfif.yDensity, littleEndian: false)
+            $0.append(0)
+            $0.append(0)
+        }
+        appendSegment(0xFE, to: &data) {
+            $0.appendASCII(comment)
+        }
+        appendSegment(0xDB, to: &data) {
+            $0.append(0)
+            $0.append(contentsOf: quantization)
+        }
+        appendSegment(0xC0, to: &data) {
+            $0.append(precision)
+            $0.appendU16(height, littleEndian: false)
+            $0.appendU16(width, littleEndian: false)
+            $0.append(UInt8(components.count))
+            for component in components {
+                $0.append(component.id)
+                $0.append((component.horizontalSampling << 4) | component.verticalSampling)
+                $0.append(component.quantizationTable)
+            }
+        }
+        appendSegment(0xDA, to: &data) {
+            $0.append(UInt8(scan.count))
+            for component in scan {
+                $0.append(component.id)
+                $0.append((component.dcTable << 4) | component.acTable)
+            }
+            $0.append(spectralStart)
+            $0.append(spectralEnd)
+            $0.append(successiveApproximation)
+        }
+        for byte in entropy {
+            data.append(byte)
+            if byte == 0xFF {
+                data.append(0x00)
+            }
+        }
+        data.append(contentsOf: [0xFF, 0xD9])
+        return data
+    }
+
+    init(
+        jfif: JFIF,
+        comment: String,
+        quantization: [UInt8],
+        precision: UInt8,
+        width: UInt16,
+        height: UInt16,
+        components: [Component],
+        scan: [ScanComponent],
+        spectralStart: UInt8,
+        spectralEnd: UInt8,
+        successiveApproximation: UInt8,
+        entropy: Data
+    ) {
+        self.jfif = jfif
+        self.comment = comment
+        self.quantization = quantization
+        self.precision = precision
+        self.width = width
+        self.height = height
+        self.components = components
+        self.scan = scan
+        self.spectralStart = spectralStart
+        self.spectralEnd = spectralEnd
+        self.successiveApproximation = successiveApproximation
+        self.entropy = entropy
+    }
+
+    init(jpegData data: Data) throws {
+        var cursor = BinaryCursor(data: data, littleEndian: false)
+        guard try cursor.u8() == 0xFF, try cursor.u8() == 0xD8 else {
+            throw FormatReadError("JPEG file does not start with SOI.")
+        }
+
+        var jfif: JFIF?
+        var comment = ""
+        var quantization: [UInt8] = []
+        var precision: UInt8 = 0
+        var width: UInt16 = 0
+        var height: UInt16 = 0
+        var components: [Component] = []
+        var scan: [ScanComponent] = []
+        var spectralStart: UInt8 = 0
+        var spectralEnd: UInt8 = 0
+        var successiveApproximation: UInt8 = 0
+
+        while !cursor.isAtEnd {
+            guard try cursor.u8() == 0xFF else { throw FormatReadError("JPEG marker is missing the 0xFF prefix.") }
+            let marker = try cursor.u8()
+            if marker == 0xD9 {
+                break
+            }
+            if marker == 0xDA {
+                let length = Int(try cursor.u16())
+                guard length >= 2 else { throw FormatReadError("JPEG segment length is too small.") }
+                let payload = try cursor.bytes(length - 2)
+                var scanCursor = BinaryCursor(data: payload, littleEndian: false)
+                let count = Int(try scanCursor.u8())
+                scan = try (0..<count).map { _ in
+                    let id = try scanCursor.u8()
+                    let tables = try scanCursor.u8()
+                    return ScanComponent(id: id, dcTable: tables >> 4, acTable: tables & 0x0F)
+                }
+                spectralStart = try scanCursor.u8()
+                spectralEnd = try scanCursor.u8()
+                successiveApproximation = try scanCursor.u8()
+                var entropy = Data()
+                while !cursor.isAtEnd {
+                    let byte = try cursor.u8()
+                    if byte != 0xFF {
+                        entropy.append(byte)
+                        continue
+                    }
+                    let next = try cursor.u8()
+                    if next == 0x00 {
+                        entropy.append(0xFF)
+                    } else if next == 0xD9 {
+                        self.jfif = try required(jfif, "JPEG file is missing APP0.")
+                        self.comment = comment
+                        self.quantization = quantization
+                        self.precision = precision
+                        self.width = width
+                        self.height = height
+                        self.components = components
+                        self.scan = scan
+                        self.spectralStart = spectralStart
+                        self.spectralEnd = spectralEnd
+                        self.successiveApproximation = successiveApproximation
+                        self.entropy = entropy
+                        return
+                    } else {
+                        throw FormatReadError("Unexpected JPEG marker inside the scan.")
+                    }
+                }
+                throw FormatReadError("JPEG file is missing EOI.")
+            }
+
+            let length = Int(try cursor.u16())
+            guard length >= 2 else { throw FormatReadError("JPEG segment length is too small.") }
+            let payload = try cursor.bytes(length - 2)
+            var segment = BinaryCursor(data: payload, littleEndian: false)
+            switch marker {
+            case 0xE0:
+                guard try segment.ascii(5) == "JFIF\u{0}" else { throw FormatReadError("APP0 is not JFIF.") }
+                jfif = JFIF(
+                    major: try segment.u8(),
+                    minor: try segment.u8(),
+                    units: try segment.u8(),
+                    xDensity: try segment.u16(),
+                    yDensity: try segment.u16()
+                )
+            case 0xFE:
+                comment = String(data: payload, encoding: .utf8) ?? ""
+            case 0xDB:
+                _ = try segment.u8()
+                quantization = [UInt8](try segment.bytes(64))
+            case 0xC0:
+                precision = try segment.u8()
+                height = try segment.u16()
+                width = try segment.u16()
+                let count = Int(try segment.u8())
+                components = try (0..<count).map { _ in
+                    let id = try segment.u8()
+                    let sampling = try segment.u8()
+                    return Component(
+                        id: id,
+                        horizontalSampling: sampling >> 4,
+                        verticalSampling: sampling & 0x0F,
+                        quantizationTable: try segment.u8()
+                    )
+                }
+            default:
+                break
+            }
+        }
+        throw FormatReadError("JPEG file ended before EOI.")
+    }
+
+    private func appendSegment(_ marker: UInt8, to data: inout Data, body: (inout Data) -> Void) {
+        var payload = Data()
+        body(&payload)
+        data.append(0xFF)
+        data.append(marker)
+        data.appendU16(UInt16(payload.count + 2), littleEndian: false)
+        data.append(payload)
+    }
+}
+
 // MARK: - Bytes
 
 private struct FormatReadError: Error, CustomStringConvertible {
