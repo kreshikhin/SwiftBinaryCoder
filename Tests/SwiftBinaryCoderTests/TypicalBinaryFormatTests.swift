@@ -105,6 +105,43 @@ final class TypicalBinaryFormatTests: XCTestCase {
         try assertCoderRoundTrip(image, endianness: .little)
         try assertCoderRoundTrip(motorola, endianness: .big)
     }
+
+    func testWriteAndReadJPEG() throws {
+        let image = JPEGImage(
+            jfif: JPEGImage.JFIF(major: 1, minor: 1, units: 1, xDensity: 72, yDensity: 72),
+            comment: "sample",
+            quantization: (0..<64).map { UInt8(($0 * 3 + 7) % 255) },
+            precision: 8,
+            width: 8,
+            height: 8,
+            components: [
+                JPEGImage.Component(id: 1, horizontalSampling: 2, verticalSampling: 2, quantizationTable: 0),
+                JPEGImage.Component(id: 2, horizontalSampling: 1, verticalSampling: 1, quantizationTable: 0),
+                JPEGImage.Component(id: 3, horizontalSampling: 1, verticalSampling: 1, quantizationTable: 0),
+            ],
+            scan: [
+                JPEGImage.ScanComponent(id: 1, dcTable: 0, acTable: 0),
+                JPEGImage.ScanComponent(id: 2, dcTable: 0, acTable: 0),
+                JPEGImage.ScanComponent(id: 3, dcTable: 0, acTable: 0),
+            ],
+            spectralStart: 0,
+            spectralEnd: 63,
+            successiveApproximation: 0,
+            entropy: Data([0x12, 0xFF, 0x34, 0x00, 0xAB])
+        )
+
+        let file = image.jpegData()
+        let read = try JPEGImage(jpegData: file)
+
+        XCTAssertEqual(read, image)
+        XCTAssertEqual(file.prefix(2), Data([0xFF, 0xD8]))
+        XCTAssertEqual(file.suffix(2), Data([0xFF, 0xD9]))
+        XCTAssertEqual(read.quantization.count, 64)
+        XCTAssertEqual(read.components.count, 3)
+        XCTAssertThrowsError(try JPEGImage(jpegData: Data([0x00, 0x00])))
+
+        try assertCoderRoundTrip(image, endianness: .big)
+    }
 }
 
 // MARK: - WAVE
