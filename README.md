@@ -13,9 +13,24 @@ struct Player: Codable {
     var avatar: Data
 }
 
+let player = Player(name: "Ada", score: 7, avatar: Data([0x01, 0x02]))
 let data = try BinaryEncoder().encode(player)
 let copy = try BinaryDecoder().decode(Player.self, from: data)
 ```
+
+`data` is one map of three fields. The default byte order is big-endian:
+
+```text
+16 03
+   0D 04 6E 61 6D 65          "name"
+   0D 03 41 64 61             "Ada"
+   0D 05 73 63 6F 72 65       "score"
+   03 07                      7
+   0D 06 61 76 61 74 61 72    "avatar"
+   10 02 01 02                Data([0x01, 0x02])
+```
+
+Each value kind has its own page, with the same kind of hex dump, in the [wiki](docs/Home.md).
 
 `String` and `Data` stay distinct. `Date` is a timestamp (`float64` seconds since 1970) unless you pick another date strategy. `BinaryExtension` and types that adopt `BinaryExtensible` are extension blobs: a type code plus raw bytes.
 
