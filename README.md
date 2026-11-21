@@ -1,5 +1,10 @@
 # SwiftBinaryCoder
 
+[![Swift 5.10](https://img.shields.io/badge/Swift-5.10+-F05138?logo=swift&logoColor=white)](https://swift.org)
+[![Swift Package Manager](https://img.shields.io/badge/Swift_Package_Manager-compatible-F05138?logo=swift&logoColor=white)](https://swift.org/package-manager/)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20iOS%20%7C%20tvOS%20%7C%20watchOS%20%7C%20visionOS%20%7C%20Linux-lightgrey)](https://swift.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Encode and decode Swift `Codable` values as a compact binary document.
 
 A document can hold null, booleans, signed and unsigned integers, float32, float64, UTF-8 strings, raw bytes, arrays, maps, timestamps, and typed extension blobs. Integers and lengths use the smallest width that fits, and multi-byte numbers are big-endian by default.
